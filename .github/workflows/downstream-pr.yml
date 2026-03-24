@@ -1,0 +1,231 @@
+name: Downstream PR
+
+# Chain: master → uat → qa → staging
+# Fires on every push (i.e. after a PR is merged) to any of these branches.
+#
+# NOTE: back-merge.yml also fires on master push and creates master → uat.
+# To avoid duplicate PRs, either remove the matrix.target: uat entry from
+# back-merge.yml, or leave both and rely on the idempotency check here
+# (the second workflow will skip if a PR already exists).
+
+on:
+  push:
+    branches:
+      - master
+      - uat
+      - qa
+
+jobs:
+  downstream-pr:
+    name: "${{ github.ref_name }} → downstream"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ── 1. Resolve target branch ──────────────────────────────────────────
+      - name: Resolve target branch
+        id: branches
+        run: |
+          SOURCE="${{ github.ref_name }}"
+          case "$SOURCE" in
+            master) TARGET="uat"     ;;
+            uat)    TARGET="qa"      ;;
+            qa)     TARGET="staging" ;;
+            *)
+              echo "No downstream target for branch: $SOURCE — skipping."
+              echo "has_target=false" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+          echo "source=$SOURCE"   >> "$GITHUB_OUTPUT"
+          echo "target=$TARGET"   >> "$GITHUB_OUTPUT"
+          echo "has_target=true"  >> "$GITHUB_OUTPUT"
+
+      # ── 2. Check whether target is already up to date ────────────────────
+      - name: Check for diff
+        id: diff
+        if: steps.branches.outputs.has_target == 'true'
+        run: |
+          git fetch origin ${{ steps.branches.outputs.target }}
+          AHEAD=$(git rev-list --count origin/${{ steps.branches.outputs.target }}..HEAD)
+          echo "ahead=$AHEAD" >> "$GITHUB_OUTPUT"
+          echo "Commits ahead of ${{ steps.branches.outputs.target }}: $AHEAD"
+
+      # ── 3. Check for an already-open PR (idempotency) ────────────────────
+      - name: Check for existing open PR
+        id: existing
+        if: steps.branches.outputs.has_target == 'true' && steps.diff.outputs.ahead != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_JSON=$(gh pr list \
+            --head "${{ steps.branches.outputs.source }}" \
+            --base "${{ steps.branches.outputs.target }}" \
+            --state open \
+            --json number,url \
+            --jq '.[0] // empty')
+
+          if [ -n "$PR_JSON" ]; then
+            echo "pr_number=$(echo "$PR_JSON" | jq -r '.number')" >> "$GITHUB_OUTPUT"
+            echo "pr_url=$(echo "$PR_JSON" | jq -r '.url')"       >> "$GITHUB_OUTPUT"
+            echo "pr_exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "pr_exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── 4. Create the downstream PR ──────────────────────────────────────
+      - name: Create downstream PR
+        id: create_pr
+        if: >
+          steps.branches.outputs.has_target == 'true' &&
+          steps.diff.outputs.ahead != '0' &&
+          steps.existing.outputs.pr_exists != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SOURCE="${{ steps.branches.outputs.source }}"
+          TARGET="${{ steps.branches.outputs.target }}"
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          COMMIT_MSG=$(git log -1 --pretty=format:"%s")
+          COMMIT_URL="${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          # Build PR body with printf to avoid heredoc indentation issues in YAML
+          PR_BODY=$(printf '%s\n' \
+            '## Downstream Sync' \
+            '' \
+            "Automated PR triggered by a merge into \`$SOURCE\`." \
+            '' \
+            '| | |' \
+            '|---|---|' \
+            "| **From** | \`$SOURCE\` |" \
+            "| **Into** | \`$TARGET\` |" \
+            "| **Triggered by** | @${{ github.actor }} |" \
+            "| **Commit** | [\`$SHORT_SHA\`]($COMMIT_URL) |" \
+            "| **Commit message** | $COMMIT_MSG |" \
+            "| **Workflow run** | [View run]($RUN_URL) |" \
+            '' \
+            "> Merge this PR to continue the downstream chain: \`$TARGET\` -> next environment." \
+            '' \
+            '---' \
+            '*Created automatically by the downstream-pr workflow.*')
+
+          PR_URL=$(gh pr create \
+            --head  "$SOURCE" \
+            --base  "$TARGET" \
+            --title "chore: sync $SOURCE -> $TARGET ($SHORT_SHA)" \
+            --body  "$PR_BODY")
+
+          echo "pr_url=$PR_URL"       >> "$GITHUB_OUTPUT"
+          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          # Multiline-safe output — handles %, =, newlines in commit messages
+          {
+            echo "commit_msg<<EOF"
+            echo "$COMMIT_MSG"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # ── 5a. Slack — PR successfully created ──────────────────────────────
+      - name: Slack — PR created
+        if: steps.create_pr.outputs.pr_url != ''
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SOURCE:       ${{ steps.branches.outputs.source }}
+          TARGET:       ${{ steps.branches.outputs.target }}
+          PR_URL:       ${{ steps.create_pr.outputs.pr_url }}
+          SHORT_SHA:    ${{ steps.create_pr.outputs.short_sha }}
+          COMMIT_MSG:   ${{ steps.create_pr.outputs.commit_msg }}
+          ACTOR:        ${{ github.actor }}
+        run: |
+          jq -n \
+            --arg source     "$SOURCE" \
+            --arg target     "$TARGET" \
+            --arg pr_url     "$PR_URL" \
+            --arg sha        "$SHORT_SHA" \
+            --arg msg        "$COMMIT_MSG" \
+            --arg actor      "$ACTOR" \
+            '{
+              blocks: [
+                {
+                  type: "header",
+                  text: { type: "plain_text", text: "🔀 Downstream PR Created", emoji: true }
+                },
+                {
+                  type: "section",
+                  fields: [
+                    { type: "mrkdwn", text: ("*From:*\n`" + $source + "`") },
+                    { type: "mrkdwn", text: ("*Into:*\n`"  + $target + "`") },
+                    { type: "mrkdwn", text: ("*Triggered by:*\n@" + $actor) },
+                    { type: "mrkdwn", text: ("*Commit:*\n`" + $sha + "` — " + $msg) }
+                  ]
+                },
+                {
+                  type: "actions",
+                  elements: [
+                    {
+                      type:  "button",
+                      text:  { type: "plain_text", text: "Review PR", emoji: true },
+                      url:   $pr_url,
+                      style: "primary"
+                    }
+                  ]
+                }
+              ]
+            }' \
+          | curl -s -f -X POST "$SLACK_WEBHOOK_URL" \
+              -H "Content-Type: application/json" \
+              -d @-
+
+      # ── 5b. Slack — PR already exists (reminder) ─────────────────────────
+      - name: Slack — PR already exists
+        if: steps.existing.outputs.pr_exists == 'true'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SOURCE:     ${{ steps.branches.outputs.source }}
+          TARGET:     ${{ steps.branches.outputs.target }}
+          PR_NUMBER:  ${{ steps.existing.outputs.pr_number }}
+          PR_URL:     ${{ steps.existing.outputs.pr_url }}
+          ACTOR:      ${{ github.actor }}
+        run: |
+          jq -n \
+            --arg source    "$SOURCE" \
+            --arg target    "$TARGET" \
+            --arg pr_number "$PR_NUMBER" \
+            --arg pr_url    "$PR_URL" \
+            --arg actor     "$ACTOR" \
+            '{
+              blocks: [
+                {
+                  type: "section",
+                  text: {
+                    type: "mrkdwn",
+                    text: (
+                      "ℹ️ *Downstream PR already open* — @" + $actor +
+                      " merged into `" + $source + "` but PR #" + $pr_number +
+                      " (`" + $source + "` → `" + $target + "`) is still open.\n" +
+                      "Please review and merge it to keep the chain moving."
+                    )
+                  }
+                },
+                {
+                  type: "actions",
+                  elements: [
+                    {
+                      type: "button",
+                      text: { type: "plain_text", text: "View Open PR", emoji: true },
+                      url:  $pr_url
+                    }
+                  ]
+                }
+              ]
+            }' \
+          | curl -s -f -X POST "$SLACK_WEBHOOK_URL" \
+              -H "Content-Type: application/json" \
+              -d @-
