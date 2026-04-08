@@ -179,7 +179,7 @@ jobs:
               blocks: [
                 {
                   type: "header",
-                  text: { type: "plain_text", text: ("\U0001f500  " + $source + " → " + $target), emoji: false }
+                  text: { type: "plain_text", text: ("🔀  " + $source + " → " + $target), emoji: false }
                 },
                 {
                   type: "section",
@@ -225,7 +225,7 @@ jobs:
               blocks: [
                 {
                   type: "header",
-                  text: { type: "plain_text", text: ("\U0001f500  " + $source + " → " + $target), emoji: false }
+                  text: { type: "plain_text", text: ("🔀  " + $source + " → " + $target), emoji: false }
                 },
                 {
                   type: "section",
@@ -270,7 +270,7 @@ jobs:
               blocks: [
                 {
                   type: "header",
-                  text: { type: "plain_text", text: ("\U0001f500  " + $source + " → " + $target), emoji: false }
+                  text: { type: "plain_text", text: ("🔀  " + $source + " → " + $target), emoji: false }
                 },
                 {
                   type: "section",
