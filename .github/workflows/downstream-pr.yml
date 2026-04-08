@@ -136,8 +136,7 @@ jobs:
               --head  "$SOURCE" \
               --base  "$TARGET" \
               --title "chore: sync $SOURCE -> $TARGET ($SHORT_SHA)" \
-              --body  "$PR_BODY" \
-              --label "automated,downstream-sync") && break
+              --body  "$PR_BODY") && break
 
             if [ $attempt -lt 3 ]; then
               echo "Attempt $attempt failed, retrying in $((attempt * 5))s..."
