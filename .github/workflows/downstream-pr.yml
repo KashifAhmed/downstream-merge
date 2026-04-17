@@ -72,14 +72,17 @@ jobs:
         if: steps.branches.outputs.has_target == 'true' && steps.diff.outputs.ahead != '0'
         run: |
           git fetch origin ${{ steps.branches.outputs.target }}
-          
+
           # Try a dry-run merge
           if ! git merge --no-commit --no-ff origin/${{ steps.branches.outputs.target }} 2>/dev/null; then
             echo "has_conflicts=true" >> "$GITHUB_OUTPUT"
-            git merge --abort
+            git merge --abort 2>/dev/null || true
           else
             echo "has_conflicts=false" >> "$GITHUB_OUTPUT"
-            git merge --abort
+            # Only abort if MERGE_HEAD exists (i.e., a merge was actually started)
+            if [ -e .git/MERGE_HEAD ]; then
+              git merge --abort
+            fi
           fi
 
       # ── 4. Check for an already-open PR (idempotency) ────────────────────
