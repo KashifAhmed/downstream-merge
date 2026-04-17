@@ -34,14 +34,15 @@ jobs:
         run: |
           # Map GitHub usernames to Slack user IDs
           # Edit this section to add/update mappings
+          # IMPORTANT: Slack user IDs look like "U12345678" or "W12345678"
           declare -A SLACK_MAP=(
             ["KashifAhmed"]="DG0QWK8R4"      # Replace with actual Slack user ID
             ["john-doe"]="U87654321"         # Replace with actual Slack user ID
             ["jane-smith"]="U11223344"       # Replace with actual Slack user ID
             # Add more mappings: ["github-username"]="Slack-User-ID"
           )
-          
-          # Export mapping as JSON for easy lookup
+
+          # Export mapping as JSON for easy lookup in later steps
           {
             echo "slack_map_json<<EOF"
             for github_user in "${!SLACK_MAP[@]}"; do
@@ -49,12 +50,6 @@ jobs:
             done | jq -R -s 'split("\n") | map(select(length > 0)) | map(split("=") | {(.[0]): .[1]}) | add'
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
-          
-          # Save mapping to file for sourcing in later steps
-          mkdir -p /tmp/slack_map
-          for github_user in "${!SLACK_MAP[@]}"; do
-            echo "${SLACK_MAP[$github_user]}" > "/tmp/slack_map/$github_user"
-          done
 
       # ── 2. Resolve target branch ──────────────────────────────────────────
       - name: Resolve target branch
@@ -214,15 +209,10 @@ jobs:
           SHORT_SHA:    $(git rev-parse --short HEAD)
           COMMIT_MSG:   $(git log -1 --pretty=format:"%s")
           ACTOR:        ${{ github.actor }}
+          SLACK_MAP:    ${{ steps.slack_users.outputs.slack_map_json }}
         run: |
-          # Lookup Slack user ID
-          SLACK_USER_FILE="/tmp/slack_map/$ACTOR"
-          if [ -f "$SLACK_USER_FILE" ]; then
-            SLACK_USER_ID=$(cat "$SLACK_USER_FILE")
-            ACTOR_TAG="<@$SLACK_USER_ID>"
-          else
-            ACTOR_TAG="@$ACTOR"
-          fi
+          # Lookup Slack user ID from mapping
+          SLACK_USER_ID=$(echo "$SLACK_MAP" | jq -r --arg actor "$ACTOR" '.[$actor] // empty')
           
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           jq -n \
@@ -230,7 +220,8 @@ jobs:
             --arg target     "$TARGET" \
             --arg sha        "$SHORT_SHA" \
             --arg msg        "$COMMIT_MSG" \
-            --arg actor      "$ACTOR_TAG" \
+            --arg actor      "$ACTOR" \
+            --arg slack_id   "$SLACK_USER_ID" \
             --arg run_url    "$RUN_URL" \
             '{
               blocks: [
@@ -242,7 +233,7 @@ jobs:
                   type: "section",
                   text: {
                     type: "mrkdwn",
-                    text: ("⚠️ *Cannot create downstream PR*\n\nMerge conflict detected between `" + $source + "` and `" + $target + "`.\n\n👤 Triggered by: " + $actor + "\n📝 Commit: `" + $sha + "` - " + $msg)
+                    text: ("⚠️ *Cannot create downstream PR*\n\nMerge conflict detected between `" + $source + "` and `" + $target + "`.\n\n👤 Triggered by: " + (if $slack_id != "" then "<@" + $slack_id + ">" else "@" + $actor end) + "\n📝 Commit: `" + $sha + "` - " + $msg)
                   }
                 },
                 {
@@ -274,15 +265,10 @@ jobs:
           SHORT_SHA:    ${{ steps.create_pr.outputs.short_sha }}
           COMMIT_MSG:   ${{ steps.create_pr.outputs.commit_msg }}
           ACTOR:        ${{ github.actor }}
+          SLACK_MAP:    ${{ steps.slack_users.outputs.slack_map_json }}
         run: |
-          # Lookup Slack user ID
-          SLACK_USER_FILE="/tmp/slack_map/$ACTOR"
-          if [ -f "$SLACK_USER_FILE" ]; then
-            SLACK_USER_ID=$(cat "$SLACK_USER_FILE")
-            ACTOR_TAG="<@$SLACK_USER_ID>"
-          else
-            ACTOR_TAG="@$ACTOR"
-          fi
+          # Lookup Slack user ID from mapping
+          SLACK_USER_ID=$(echo "$SLACK_MAP" | jq -r --arg actor "$ACTOR" '.[$actor] // empty')
           
           jq -n \
             --arg source     "$SOURCE" \
@@ -290,7 +276,8 @@ jobs:
             --arg pr_url     "$PR_URL" \
             --arg sha        "$SHORT_SHA" \
             --arg msg        "$COMMIT_MSG" \
-            --arg actor      "$ACTOR_TAG" \
+            --arg actor      "$ACTOR" \
+            --arg slack_id   "$SLACK_USER_ID" \
             '{
               blocks: [
                 {
@@ -301,7 +288,7 @@ jobs:
                   type: "section",
                   text: {
                     type: "mrkdwn",
-                    text: ("*" + $actor + "* · `" + $sha + "`\n" + $msg)
+                    text: ("*" + (if $slack_id != "" then "<@" + $slack_id + ">" else "@" + $actor end) + "* · `" + $sha + "`\n" + $msg)
                   }
                 },
                 {
@@ -331,21 +318,17 @@ jobs:
           TARGET:     ${{ steps.branches.outputs.target }}
           PR_URL:     ${{ steps.existing.outputs.pr_url }}
           ACTOR:      ${{ github.actor }}
+          SLACK_MAP:  ${{ steps.slack_users.outputs.slack_map_json }}
         run: |
-          # Lookup Slack user ID
-          SLACK_USER_FILE="/tmp/slack_map/$ACTOR"
-          if [ -f "$SLACK_USER_FILE" ]; then
-            SLACK_USER_ID=$(cat "$SLACK_USER_FILE")
-            ACTOR_TAG="<@$SLACK_USER_ID>"
-          else
-            ACTOR_TAG="@$ACTOR"
-          fi
+          # Lookup Slack user ID from mapping
+          SLACK_USER_ID=$(echo "$SLACK_MAP" | jq -r --arg actor "$ACTOR" '.[$actor] // empty')
           
           jq -n \
             --arg source    "$SOURCE" \
             --arg target    "$TARGET" \
             --arg pr_url    "$PR_URL" \
-            --arg actor     "$ACTOR_TAG" \
+            --arg actor     "$ACTOR" \
+            --arg slack_id  "$SLACK_USER_ID" \
             '{
               blocks: [
                 {
@@ -356,7 +339,7 @@ jobs:
                   type: "section",
                   text: {
                     type: "mrkdwn",
-                    text: ("ℹ️ *PR already open* — " + $actor + "\nPlease review and merge to keep the chain moving.")
+                    text: ("ℹ️ *PR already open* — " + (if $slack_id != "" then "<@" + $slack_id + ">" else "@" + $actor end) + "\nPlease review and merge to keep the chain moving.")
                   }
                 },
                 {
@@ -384,21 +367,17 @@ jobs:
           SOURCE: ${{ steps.branches.outputs.source }}
           TARGET: ${{ steps.branches.outputs.target }}
           ACTOR: ${{ github.actor }}
+          SLACK_MAP: ${{ steps.slack_users.outputs.slack_map_json }}
         run: |
-          # Lookup Slack user ID
-          SLACK_USER_FILE="/tmp/slack_map/$ACTOR"
-          if [ -f "$SLACK_USER_FILE" ]; then
-            SLACK_USER_ID=$(cat "$SLACK_USER_FILE")
-            ACTOR_TAG="<@$SLACK_USER_ID>"
-          else
-            ACTOR_TAG="@$ACTOR"
-          fi
+          # Lookup Slack user ID from mapping
+          SLACK_USER_ID=$(echo "$SLACK_MAP" | jq -r --arg actor "$ACTOR" '.[$actor] // empty')
           
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           jq -n \
             --arg source "$SOURCE" \
             --arg target "$TARGET" \
-            --arg actor "$ACTOR_TAG" \
+            --arg actor "$ACTOR" \
+            --arg slack_id "$SLACK_USER_ID" \
             --arg run_url "$RUN_URL" \
             '{
               blocks: [
@@ -410,7 +389,7 @@ jobs:
                   type: "section",
                   text: {
                     type: "mrkdwn",
-                    text: ("❌ *Sync failed* — " + $actor + "\nPlease check the workflow logs.")
+                    text: ("❌ *Sync failed* — " + (if $slack_id != "" then "<@" + $slack_id + ">" else "@" + $actor end) + "\nPlease check the workflow logs.")
                   }
                 },
                 {
