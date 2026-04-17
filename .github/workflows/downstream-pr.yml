@@ -213,8 +213,8 @@ jobs:
           COMMIT_MSG=$(git log -1 --pretty=format:"%s")
           COMMIT_AUTHOR=$(git log -1 --pretty=format:"%an")
 
-          # Lookup Slack User ID from mapping
-          USER_ID=$(echo "$SLACK_USER_ID" | jq -r --arg actor "$ACTOR" '.[$actor] // ""')
+          # Lookup Slack User ID from mapping (case-insensitive)
+          USER_ID=$(echo "$SLACK_USER_ID" | jq -r --arg actor "$ACTOR" 'to_entries | map(select((.key | ascii_downcase) == ($actor | ascii_downcase))) | .[0].value // ""')
 
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           jq -n \
@@ -271,8 +271,8 @@ jobs:
           ACTOR:        ${{ github.actor }}
           SLACK_USER_ID: ${{ steps.slack_users.outputs.slack_map_json }}
         run: |
-          # Lookup Slack User ID from mapping
-          USER_ID=$(echo "$SLACK_USER_ID" | jq -r --arg actor "$ACTOR" '.[$actor] // ""')
+          # Lookup Slack User ID from mapping (case-insensitive)
+          USER_ID=$(echo "$SLACK_USER_ID" | jq -r --arg actor "$ACTOR" 'to_entries | map(select((.key | ascii_downcase) == ($actor | ascii_downcase))) | .[0].value // ""')
 
           jq -n \
             --arg source     "$SOURCE" \
@@ -325,8 +325,8 @@ jobs:
           ACTOR:      ${{ github.actor }}
           SLACK_USER_ID: ${{ steps.slack_users.outputs.slack_map_json }}
         run: |
-          # Lookup Slack User ID from mapping
-          USER_ID=$(echo "$SLACK_USER_ID" | jq -r --arg actor "$ACTOR" '.[$actor] // ""')
+          # Lookup Slack User ID from mapping (case-insensitive)
+          USER_ID=$(echo "$SLACK_USER_ID" | jq -r --arg actor "$ACTOR" 'to_entries | map(select((.key | ascii_downcase) == ($actor | ascii_downcase))) | .[0].value // ""')
           
           jq -n \
             --arg source    "$SOURCE" \
@@ -374,8 +374,8 @@ jobs:
           ACTOR: ${{ github.actor }}
           SLACK_USER_ID: ${{ steps.slack_users.outputs.slack_map_json }}
         run: |
-          # Lookup Slack User ID from mapping
-          USER_ID=$(echo "$SLACK_USER_ID" | jq -r --arg actor "$ACTOR" '.[$actor] // ""')
+          # Lookup Slack User ID from mapping (case-insensitive)
+          USER_ID=$(echo "$SLACK_USER_ID" | jq -r --arg actor "$ACTOR" 'to_entries | map(select((.key | ascii_downcase) == ($actor | ascii_downcase))) | .[0].value // ""')
 
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           SOURCE_LABEL="${SOURCE:-unknown}"
