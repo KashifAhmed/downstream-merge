@@ -36,7 +36,7 @@ jobs:
           # Edit this section to add/update mappings
           # IMPORTANT: Slack user IDs look like "U12345678" or "W12345678"
           declare -A SLACK_MAP=(
-            ["KashifAhmed"]="Kashif"      # Replace with actual Slack user ID
+            ["KashifAhmed"]="@Kashif"      # Replace with actual Slack user ID
             ["john-doe"]="U87654321"         # Replace with actual Slack user ID
             ["jane-smith"]="U11223344"       # Replace with actual Slack user ID
             # Add more mappings: ["github-username"]="Slack-User-ID"
