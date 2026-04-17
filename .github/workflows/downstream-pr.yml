@@ -35,7 +35,7 @@ jobs:
           # Map GitHub usernames to Slack user IDs
           # Edit this section to add/update mappings
           declare -A SLACK_MAP=(
-            ["KashifAhmed"]="Kashif"      # Replace with actual Slack user ID
+            ["KashifAhmed"]="DG0QWK8R4"      # Replace with actual Slack user ID
             ["john-doe"]="U87654321"         # Replace with actual Slack user ID
             ["jane-smith"]="U11223344"       # Replace with actual Slack user ID
             # Add more mappings: ["github-username"]="Slack-User-ID"
