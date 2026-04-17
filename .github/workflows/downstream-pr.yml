@@ -217,17 +217,10 @@ jobs:
           SHORT_SHA:    $(git rev-parse --short HEAD)
           COMMIT_MSG:   $(git log -1 --pretty=format:"%s")
           ACTOR:        ${{ github.actor }}
-          SLACK_MAP:    ${{ steps.slack_users.outputs.slack_map_json }}
+          SLACK_USER_ID: ${{ steps.slack_users.outputs.slack_map_json }}
         run: |
           # Lookup Slack User ID from mapping
-          SLACK_USER_ID=$(echo "$SLACK_MAP" | jq -r --arg actor "$ACTOR" '.[$actor] // ""')
-          
-          # Create proper Slack mention format: <@USER_ID>
-          if [ -n "$SLACK_USER_ID" ]; then
-            ACTOR_MENTION="<@${SLACK_USER_ID}>"
-          else
-            ACTOR_MENTION="@$ACTOR"
-          fi
+          USER_ID=$(echo "$SLACK_USER_ID" | jq -r --arg actor "$ACTOR" '.[$actor] // ""')
           
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           jq -n \
@@ -235,7 +228,8 @@ jobs:
             --arg target     "$TARGET" \
             --arg sha        "$SHORT_SHA" \
             --arg msg        "$COMMIT_MSG" \
-            --arg actor      "$ACTOR_MENTION" \
+            --arg actor      "$ACTOR" \
+            --arg user_id    "$USER_ID" \
             --arg run_url    "$RUN_URL" \
             '{
               blocks: [
@@ -247,7 +241,7 @@ jobs:
                   type: "section",
                   text: {
                     type: "mrkdwn",
-                    text: ("⚠️ *Cannot create downstream PR*\n\nMerge conflict detected between `" + $source + "` and `" + $target + "`.\n\n👤 Triggered by: " + $actor + "\n📝 Commit: `" + $sha + "` - " + $msg)
+                    text: ("⚠️ *Cannot create downstream PR*\n\nMerge conflict detected between `" + $source + "` and `" + $target + "`.\n\n👤 Triggered by: " + (if $user_id != "" then "<@" + $user_id + ">" else "@" + $actor end) + "\n📝 Commit: `" + $sha + "` - " + $msg)
                   }
                 },
                 {
@@ -279,17 +273,10 @@ jobs:
           SHORT_SHA:    ${{ steps.create_pr.outputs.short_sha }}
           COMMIT_MSG:   ${{ steps.create_pr.outputs.commit_msg }}
           ACTOR:        ${{ github.actor }}
-          SLACK_MAP:    ${{ steps.slack_users.outputs.slack_map_json }}
+          SLACK_USER_ID: ${{ steps.slack_users.outputs.slack_map_json }}
         run: |
           # Lookup Slack User ID from mapping
-          SLACK_USER_ID=$(echo "$SLACK_MAP" | jq -r --arg actor "$ACTOR" '.[$actor] // ""')
-          
-          # Create proper Slack mention format: <@USER_ID>
-          if [ -n "$SLACK_USER_ID" ]; then
-            ACTOR_MENTION="<@${SLACK_USER_ID}>"
-          else
-            ACTOR_MENTION="@$ACTOR"
-          fi
+          USER_ID=$(echo "$SLACK_USER_ID" | jq -r --arg actor "$ACTOR" '.[$actor] // ""')
           
           jq -n \
             --arg source     "$SOURCE" \
@@ -297,7 +284,8 @@ jobs:
             --arg pr_url     "$PR_URL" \
             --arg sha        "$SHORT_SHA" \
             --arg msg        "$COMMIT_MSG" \
-            --arg actor      "$ACTOR_MENTION" \
+            --arg actor      "$ACTOR" \
+            --arg user_id    "$USER_ID" \
             '{
               blocks: [
                 {
@@ -308,7 +296,7 @@ jobs:
                   type: "section",
                   text: {
                     type: "mrkdwn",
-                    text: ("*" + $actor + "* · `" + $sha + "`\n" + $msg)
+                    text: ("*" + (if $user_id != "" then "<@" + $user_id + ">" else "@" + $actor end) + "* · `" + $sha + "`\n" + $msg)
                   }
                 },
                 {
@@ -338,23 +326,17 @@ jobs:
           TARGET:     ${{ steps.branches.outputs.target }}
           PR_URL:     ${{ steps.existing.outputs.pr_url }}
           ACTOR:      ${{ github.actor }}
-          SLACK_MAP:  ${{ steps.slack_users.outputs.slack_map_json }}
+          SLACK_USER_ID: ${{ steps.slack_users.outputs.slack_map_json }}
         run: |
           # Lookup Slack User ID from mapping
-          SLACK_USER_ID=$(echo "$SLACK_MAP" | jq -r --arg actor "$ACTOR" '.[$actor] // ""')
-          
-          # Create proper Slack mention format: <@USER_ID>
-          if [ -n "$SLACK_USER_ID" ]; then
-            ACTOR_MENTION="<@${SLACK_USER_ID}>"
-          else
-            ACTOR_MENTION="@$ACTOR"
-          fi
+          USER_ID=$(echo "$SLACK_USER_ID" | jq -r --arg actor "$ACTOR" '.[$actor] // ""')
           
           jq -n \
             --arg source    "$SOURCE" \
             --arg target    "$TARGET" \
             --arg pr_url    "$PR_URL" \
-            --arg actor     "$ACTOR_MENTION" \
+            --arg actor     "$ACTOR" \
+            --arg user_id   "$USER_ID" \
             '{
               blocks: [
                 {
@@ -365,7 +347,7 @@ jobs:
                   type: "section",
                   text: {
                     type: "mrkdwn",
-                    text: ("ℹ️ *PR already open* — " + $actor + "\nPlease review and merge to keep the chain moving.")
+                    text: ("ℹ️ *PR already open* — " + (if $user_id != "" then "<@" + $user_id + ">" else "@" + $actor end) + "\nPlease review and merge to keep the chain moving.")
                   }
                 },
                 {
@@ -393,23 +375,17 @@ jobs:
           SOURCE: ${{ steps.branches.outputs.source }}
           TARGET: ${{ steps.branches.outputs.target }}
           ACTOR: ${{ github.actor }}
-          SLACK_MAP: ${{ steps.slack_users.outputs.slack_map_json }}
+          SLACK_USER_ID: ${{ steps.slack_users.outputs.slack_map_json }}
         run: |
           # Lookup Slack User ID from mapping
-          SLACK_USER_ID=$(echo "$SLACK_MAP" | jq -r --arg actor "$ACTOR" '.[$actor] // ""')
-          
-          # Create proper Slack mention format: <@USER_ID>
-          if [ -n "$SLACK_USER_ID" ]; then
-            ACTOR_MENTION="<@${SLACK_USER_ID}>"
-          else
-            ACTOR_MENTION="@$ACTOR"
-          fi
+          USER_ID=$(echo "$SLACK_USER_ID" | jq -r --arg actor "$ACTOR" '.[$actor] // ""')
           
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           jq -n \
             --arg source "$SOURCE" \
             --arg target "$TARGET" \
-            --arg actor "$ACTOR_MENTION" \
+            --arg actor "$ACTOR" \
+            --arg user_id "$USER_ID" \
             --arg run_url "$RUN_URL" \
             '{
               blocks: [
@@ -421,7 +397,7 @@ jobs:
                   type: "section",
                   text: {
                     type: "mrkdwn",
-                    text: ("❌ *Sync failed* — " + $actor + "\nPlease check the workflow logs.")
+                    text: ("❌ *Sync failed* — " + (if $user_id != "" then "<@" + $user_id + ">" else "@" + $actor end) + "\nPlease check the workflow logs.")
                   }
                 },
                 {
