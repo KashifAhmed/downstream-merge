@@ -44,7 +44,7 @@ jobs:
           #   4. Paste it below (without the @ symbol)
           #
           declare -A SLACK_MAP=(
-            ["KashifAhmed"]="DG0QWK8R4"    # Replace with your Slack User ID
+            ["KashifAhmed"]="UG0QWK38E"    # Replace with your Slack User ID
             ["john-doe"]="U87654321"       # Replace with actual Slack User ID
             ["jane-smith"]="U11223344"     # Replace with actual Slack User ID
             # Add more mappings: ["github-username"]="SlackUserID"
