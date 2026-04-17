@@ -11,8 +11,8 @@ on:
 
 # Prevent duplicate PRs from rapid merges
 concurrency:
-  group: downstream-pr-${{ github.ref_name }}
-  cancel-in-progress: false
+  group: downstream-pr-${{ github.ref_name }}-${{ github.run_id }}
+  cancel-in-progress: true
 
 jobs:
   downstream-pr:
@@ -32,32 +32,17 @@ jobs:
       - name: Setup Slack user mapping
         id: slack_users
         run: |
-          # Map GitHub usernames to Slack User IDs
-          # IMPORTANT: Use Slack User IDs for real notifications (not usernames)
-          # Format: ["GitHubUsername"]="SlackUserID"
-          # Slack User IDs look like: U12345678 or W12345678
+          # Load Slack user mapping from central JSON file
+          # See: .github/slack-users.json
           #
           # How to find your Slack User ID:
           #   1. Open Slack
           #   2. Click on your profile picture (or the person's)
           #   3. Click ⋯ (three dots) → "Copy member ID"
-          #   4. Paste it below (without the @ symbol)
+          #   4. Add to .github/slack-users.json
           #
-          declare -A SLACK_MAP=(
-            ["KashifAhmed"]="UG0QWK38E"    # Replace with your Slack User ID
-            ["john-doe"]="U87654321"       # Replace with actual Slack User ID
-            ["jane-smith"]="U11223344"     # Replace with actual Slack User ID
-            # Add more mappings: ["github-username"]="SlackUserID"
-          )
-
-          # Export mapping as JSON for easy lookup in later steps
-          {
-            echo "slack_map_json<<EOF"
-            for github_user in "${!SLACK_MAP[@]}"; do
-              echo "$github_user=${SLACK_MAP[$github_user]}"
-            done | jq -R -s 'split("\n") | map(select(length > 0)) | map(split("=") | {(.[0]): .[1]}) | add'
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
+          SLACK_MAP=$(jq -c '.' "$GITHUB_WORKSPACE/.github/slack-users.json")
+          echo "slack_map_json=$SLACK_MAP" >> "$GITHUB_OUTPUT"
 
       # ── 2. Resolve target branch ──────────────────────────────────────────
       - name: Resolve target branch
@@ -161,6 +146,7 @@ jobs:
           TARGET="${{ steps.branches.outputs.target }}"
           SHORT_SHA=$(git rev-parse --short HEAD)
           COMMIT_MSG=$(git log -1 --pretty=format:"%s")
+          COMMIT_AUTHOR=$(git log -1 --pretty=format:"%an")
           COMMIT_URL="${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}"
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
@@ -172,6 +158,7 @@ jobs:
             "- **From:** \`$SOURCE\`" \
             "- **Into:** \`$TARGET\`" \
             "- **Triggered by:** @${{ github.actor }}" \
+            "- **Original author:** $COMMIT_AUTHOR" \
             "- **Commit:** [\`$SHORT_SHA\`]($COMMIT_URL)" \
             "- **Commit message:** $COMMIT_MSG" \
             "- **Workflow run:** [View run]($RUN_URL)" \
@@ -205,29 +192,37 @@ jobs:
             echo "$COMMIT_MSG"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
+          {
+            echo "commit_author<<EOF"
+            echo "$COMMIT_AUTHOR"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       # ── 6a. Slack — Conflict detected (PR not created) ───────────────────
       - name: Slack — conflict detected
-        if: steps.conflicts.outputs.has_conflicts == 'true'
+        if: steps.conflicts.outputs.has_conflicts == 'true' && steps.existing.outputs.pr_exists != 'true'
         continue-on-error: true
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           SOURCE:       ${{ steps.branches.outputs.source }}
           TARGET:       ${{ steps.branches.outputs.target }}
-          SHORT_SHA:    $(git rev-parse --short HEAD)
-          COMMIT_MSG:   $(git log -1 --pretty=format:"%s")
           ACTOR:        ${{ github.actor }}
           SLACK_USER_ID: ${{ steps.slack_users.outputs.slack_map_json }}
         run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          COMMIT_MSG=$(git log -1 --pretty=format:"%s")
+          COMMIT_AUTHOR=$(git log -1 --pretty=format:"%an")
+
           # Lookup Slack User ID from mapping
           USER_ID=$(echo "$SLACK_USER_ID" | jq -r --arg actor "$ACTOR" '.[$actor] // ""')
-          
+
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           jq -n \
             --arg source     "$SOURCE" \
             --arg target     "$TARGET" \
             --arg sha        "$SHORT_SHA" \
             --arg msg        "$COMMIT_MSG" \
+            --arg author     "$COMMIT_AUTHOR" \
             --arg actor      "$ACTOR" \
             --arg user_id    "$USER_ID" \
             --arg run_url    "$RUN_URL" \
@@ -241,7 +236,7 @@ jobs:
                   type: "section",
                   text: {
                     type: "mrkdwn",
-                    text: ("⚠️ *Cannot create downstream PR*\n\nMerge conflict detected between `" + $source + "` and `" + $target + "`.\n\n👤 Triggered by: " + (if $user_id != "" then "<@" + $user_id + ">" else "@" + $actor end) + "\n📝 Commit: `" + $sha + "` - " + $msg)
+                    text: ("⚠️ *Cannot create downstream PR*\n\nMerge conflict detected between `" + $source + "` and `" + $target + "`.\n\n👤 Triggered by: " + (if $user_id != "" then "<@" + $user_id + ">" else "@" + $actor end) + "\n📝 Commit: `" + $sha + "` by " + $author + "\n💬 " + $msg)
                   }
                 },
                 {
@@ -272,18 +267,20 @@ jobs:
           PR_URL:       ${{ steps.create_pr.outputs.pr_url }}
           SHORT_SHA:    ${{ steps.create_pr.outputs.short_sha }}
           COMMIT_MSG:   ${{ steps.create_pr.outputs.commit_msg }}
+          COMMIT_AUTHOR: ${{ steps.create_pr.outputs.commit_author }}
           ACTOR:        ${{ github.actor }}
           SLACK_USER_ID: ${{ steps.slack_users.outputs.slack_map_json }}
         run: |
           # Lookup Slack User ID from mapping
           USER_ID=$(echo "$SLACK_USER_ID" | jq -r --arg actor "$ACTOR" '.[$actor] // ""')
-          
+
           jq -n \
             --arg source     "$SOURCE" \
             --arg target     "$TARGET" \
             --arg pr_url     "$PR_URL" \
             --arg sha        "$SHORT_SHA" \
             --arg msg        "$COMMIT_MSG" \
+            --arg author     "$COMMIT_AUTHOR" \
             --arg actor      "$ACTOR" \
             --arg user_id    "$USER_ID" \
             '{
@@ -296,7 +293,7 @@ jobs:
                   type: "section",
                   text: {
                     type: "mrkdwn",
-                    text: ("*" + (if $user_id != "" then "<@" + $user_id + ">" else "@" + $actor end) + "* · `" + $sha + "`\n" + $msg)
+                    text: ("*" + (if $user_id != "" then "<@" + $user_id + ">" else "@" + $actor end) + "* · `" + $sha + "`\n" + $msg + "\n_Author: " + $author + "_")
                   }
                 },
                 {
@@ -368,7 +365,7 @@ jobs:
 
       # ── 6d. Slack — Workflow failed ───────────────────────────────────────
       - name: Slack — workflow failed
-        if: failure() && steps.branches.outputs.has_target == 'true'
+        if: failure()
         continue-on-error: true
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
@@ -379,11 +376,13 @@ jobs:
         run: |
           # Lookup Slack User ID from mapping
           USER_ID=$(echo "$SLACK_USER_ID" | jq -r --arg actor "$ACTOR" '.[$actor] // ""')
-          
+
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          SOURCE_LABEL="${SOURCE:-unknown}"
+          TARGET_LABEL="${TARGET:-unknown}"
           jq -n \
-            --arg source "$SOURCE" \
-            --arg target "$TARGET" \
+            --arg source "$SOURCE_LABEL" \
+            --arg target "$TARGET_LABEL" \
             --arg actor "$ACTOR" \
             --arg user_id "$USER_ID" \
             --arg run_url "$RUN_URL" \
@@ -391,13 +390,13 @@ jobs:
               blocks: [
                 {
                   type: "header",
-                  text: { type: "plain_text", text: ("🔀  " + $source + " → " + $target), emoji: false }
+                  text: { type: "plain_text", text: ("❌  " + $source + " → " + $target + " - Workflow Failed"), emoji: false }
                 },
                 {
                   type: "section",
                   text: {
                     type: "mrkdwn",
-                    text: ("❌ *Sync failed* — " + (if $user_id != "" then "<@" + $user_id + ">" else "@" + $actor end) + "\nPlease check the workflow logs.")
+                    text: ("🔴 *Sync failed* — " + (if $user_id != "" then "<@" + $user_id + ">" else "@" + $actor end) + "\nPlease check the workflow logs.")
                   }
                 },
                 {
