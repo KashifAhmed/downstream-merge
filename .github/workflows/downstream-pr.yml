@@ -124,6 +124,24 @@ jobs:
             echo "pr_exists=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # ── 4a. Check for merge conflicts on existing PR ─────────────────────
+      - name: Check for merge conflicts (existing PR)
+        id: conflicts_existing
+        if: steps.existing.outputs.pr_exists == 'true'
+        run: |
+          git fetch origin ${{ steps.branches.outputs.target }}
+
+          # Try a dry-run merge
+          if ! git merge --no-commit --no-ff origin/${{ steps.branches.outputs.target }} 2>/dev/null; then
+            echo "has_conflicts=true" >> "$GITHUB_OUTPUT"
+            git merge --abort 2>/dev/null || true
+          else
+            echo "has_conflicts=false" >> "$GITHUB_OUTPUT"
+            if [ -e .git/MERGE_HEAD ]; then
+              git merge --abort
+            fi
+          fi
+
       # ── 5. Create the downstream PR ──────────────────────────────────────
       - name: Create downstream PR
         id: create_pr
@@ -302,32 +320,50 @@ jobs:
         continue-on-error: true
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          SOURCE:     ${{ steps.branches.outputs.source }}
-          TARGET:     ${{ steps.branches.outputs.target }}
-          PR_URL:     ${{ steps.existing.outputs.pr_url }}
-          ACTOR:      ${{ github.actor }}
-          SLACK_USER_ID: ${{ steps.slack_users.outputs.slack_map_json }}
+          SOURCE:         ${{ steps.branches.outputs.source }}
+          TARGET:         ${{ steps.branches.outputs.target }}
+          PR_URL:         ${{ steps.existing.outputs.pr_url }}
+          ACTOR:          ${{ github.actor }}
+          SLACK_USER_ID:  ${{ steps.slack_users.outputs.slack_map_json }}
+          HAS_CONFLICTS:  ${{ steps.conflicts_existing.outputs.has_conflicts }}
         run: |
           # Lookup Slack User ID from mapping (case-insensitive)
           USER_ID=$(echo "$SLACK_USER_ID" | jq -r --arg actor "$ACTOR" 'to_entries | map(select((.key | ascii_downcase) == ($actor | ascii_downcase))) | .[0].value // ""')
 
+          # Determine message based on conflict status
+          if [ "$HAS_CONFLICTS" = "true" ]; then
+            HEADER="🚫  $SOURCE → $TARGET - Merge Conflict"
+            TEXT=$'⚠️ *PR already exists with conflicts*\n\nPlease resolve conflicts before merging.\n\n👤 Triggered by: '"$(if [ -n "$USER_ID" ]; then echo "<@$USER_ID>"; else echo "@$ACTOR"; fi)"
+            BUTTON_TEXT="View Conflicting PR"
+            BUTTON_STYLE="danger"
+          else
+            HEADER="🔀  $SOURCE → $TARGET"
+            if [ -n "$USER_ID" ]; then
+              TEXT=$'<@'"$USER_ID"$'> · PR already open — please review and merge'
+            else
+              TEXT=$'@'"$ACTOR"$' · PR already open — please review and merge'
+            fi
+            BUTTON_TEXT="View Open PR"
+            BUTTON_STYLE="primary"
+          fi
+
           jq -n \
-            --arg source    "$SOURCE" \
-            --arg target    "$TARGET" \
+            --arg header    "$HEADER" \
+            --arg text      "$TEXT" \
             --arg pr_url    "$PR_URL" \
-            --arg actor     "$ACTOR" \
-            --arg user_id   "$USER_ID" \
+            --arg btn_text  "$BUTTON_TEXT" \
+            --arg btn_style "$BUTTON_STYLE" \
             '{
               blocks: [
                 {
                   type: "header",
-                  text: { type: "plain_text", text: ("🔀  " + $source + " → " + $target), emoji: false }
+                  text: { type: "plain_text", text: $header, emoji: false }
                 },
                 {
                   type: "section",
                   text: {
                     type: "mrkdwn",
-                    text: ("ℹ️ *PR already open* — " + (if $user_id != "" then "<@" + $user_id + ">" else "@" + $actor end) + "\nPlease review and merge to keep the chain moving.")
+                    text: $text
                   }
                 },
                 {
@@ -335,8 +371,9 @@ jobs:
                   elements: [
                     {
                       type: "button",
-                      text: { type: "plain_text", text: "View Open PR", emoji: true },
-                      url:  $pr_url
+                      text: { type: "plain_text", text: $btn_text, emoji: true },
+                      url:  $pr_url,
+                      style: $btn_style
                     }
                   ]
                 }
