@@ -1,19 +1,18 @@
 name: Downstream PR
 
-# Chain: master → uat → qa → staging
+# Chain: master → uat → staging
 # Fires on every push (i.e. after a PR is merged) to any of these branches.
-#
-# NOTE: back-merge.yml also fires on master push and creates master → uat.
-# To avoid duplicate PRs, either remove the matrix.target: uat entry from
-# back-merge.yml, or leave both and rely on the idempotency check here
-# (the second workflow will skip if a PR already exists).
 
 on:
   push:
     branches:
       - master
       - uat
-      - qa
+
+# Prevent duplicate PRs from rapid merges
+concurrency:
+  group: downstream-pr-${{ github.ref_name }}-${{ github.run_id }}
+  cancel-in-progress: true
 
 jobs:
   downstream-pr:
@@ -29,15 +28,30 @@ jobs:
         with:
           fetch-depth: 0
 
-      # ── 1. Resolve target branch ──────────────────────────────────────────
+      # ── 1. GitHub → Slack user mapping ───────────────────────────────────
+      - name: Setup Slack user mapping
+        id: slack_users
+        run: |
+          # Load Slack user mapping from central JSON file
+          # See: .github/slack-users.json
+          #
+          # How to find your Slack User ID:
+          #   1. Open Slack
+          #   2. Click on your profile picture (or the person's)
+          #   3. Click ⋯ (three dots) → "Copy member ID"
+          #   4. Add to .github/slack-users.json
+          #
+          SLACK_MAP=$(jq -c '.' "$GITHUB_WORKSPACE/.github/slack-users.json")
+          echo "slack_map_json=$SLACK_MAP" >> "$GITHUB_OUTPUT"
+
+      # ── 2. Resolve target branch ──────────────────────────────────────────
       - name: Resolve target branch
         id: branches
         run: |
           SOURCE="${{ github.ref_name }}"
           case "$SOURCE" in
             master) TARGET="uat"     ;;
-            uat)    TARGET="qa"      ;;
-            qa)     TARGET="staging" ;;
+            uat)    TARGET="staging" ;;
             *)
               echo "No downstream target for branch: $SOURCE — skipping."
               echo "has_target=false" >> "$GITHUB_OUTPUT"
@@ -54,23 +68,60 @@ jobs:
         if: steps.branches.outputs.has_target == 'true'
         run: |
           git fetch origin ${{ steps.branches.outputs.target }}
-          AHEAD=$(git rev-list --count origin/${{ steps.branches.outputs.target }}..HEAD)
-          echo "ahead=$AHEAD" >> "$GITHUB_OUTPUT"
-          echo "Commits ahead of ${{ steps.branches.outputs.target }}: $AHEAD"
 
-      # ── 3. Check for an already-open PR (idempotency) ────────────────────
+          # Use merge-base to detect force-push safely
+          if git merge-base --is-ancestor origin/${{ steps.branches.outputs.target }} HEAD; then
+            AHEAD=$(git rev-list --count origin/${{ steps.branches.outputs.target }}..HEAD)
+            echo "ahead=$AHEAD" >> "$GITHUB_OUTPUT"
+            echo "Commits ahead of ${{ steps.branches.outputs.target }}: $AHEAD"
+          else
+            echo "Target branch is not an ancestor of current branch (possible force-push detected)"
+            # Treat as if all commits are different
+            AHEAD=$(git rev-list --count HEAD)
+            echo "ahead=$AHEAD" >> "$GITHUB_OUTPUT"
+            echo "Commits to sync: $AHEAD"
+          fi
+
+      # ── 3. Check for merge conflicts ─────────────────────────────────────
+      - name: Check for merge conflicts
+        id: conflicts
+        if: steps.branches.outputs.has_target == 'true' && steps.diff.outputs.ahead != '0'
+        run: |
+          git fetch origin ${{ steps.branches.outputs.target }}
+
+          # Try a dry-run merge
+          if ! git merge --no-commit --no-ff origin/${{ steps.branches.outputs.target }} 2>/dev/null; then
+            echo "has_conflicts=true" >> "$GITHUB_OUTPUT"
+            git merge --abort 2>/dev/null || true
+          else
+            echo "has_conflicts=false" >> "$GITHUB_OUTPUT"
+            # Only abort if MERGE_HEAD exists (i.e., a merge was actually started)
+            if [ -e .git/MERGE_HEAD ]; then
+              git merge --abort
+            fi
+          fi
+
+      # ── 4. Check for an already-open PR (idempotency) ────────────────────
       - name: Check for existing open PR
         id: existing
         if: steps.branches.outputs.has_target == 'true' && steps.diff.outputs.ahead != '0'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          PR_JSON=$(gh pr list \
-            --head "${{ steps.branches.outputs.source }}" \
-            --base "${{ steps.branches.outputs.target }}" \
-            --state open \
-            --json number,url \
-            --jq '.[0] // empty')
+          # Retry up to 3 times with exponential backoff
+          for attempt in 1 2 3; do
+            PR_JSON=$(gh pr list \
+              --head "${{ steps.branches.outputs.source }}" \
+              --base "${{ steps.branches.outputs.target }}" \
+              --state open \
+              --json number,url \
+              --jq '.[0] // empty' 2>/dev/null) && break
+
+            if [ $attempt -lt 3 ]; then
+              echo "Attempt $attempt failed, retrying in $((attempt * 5))s..."
+              sleep $((attempt * 5))
+            fi
+          done
 
           if [ -n "$PR_JSON" ]; then
             echo "pr_number=$(echo "$PR_JSON" | jq -r '.number')" >> "$GITHUB_OUTPUT"
@@ -80,12 +131,13 @@ jobs:
             echo "pr_exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # ── 4. Create the downstream PR ──────────────────────────────────────
+      # ── 5. Create the downstream PR ──────────────────────────────────────
       - name: Create downstream PR
         id: create_pr
         if: >
           steps.branches.outputs.has_target == 'true' &&
           steps.diff.outputs.ahead != '0' &&
+          steps.conflicts.outputs.has_conflicts != 'true' &&
           steps.existing.outputs.pr_exists != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -94,47 +146,120 @@ jobs:
           TARGET="${{ steps.branches.outputs.target }}"
           SHORT_SHA=$(git rev-parse --short HEAD)
           COMMIT_MSG=$(git log -1 --pretty=format:"%s")
+          COMMIT_AUTHOR=$(git log -1 --pretty=format:"%an")
           COMMIT_URL="${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}"
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
-          # Build PR body with printf to avoid heredoc indentation issues in YAML
           PR_BODY=$(printf '%s\n' \
             '## Downstream Sync' \
             '' \
             "Automated PR triggered by a merge into \`$SOURCE\`." \
             '' \
-            '| | |' \
-            '|---|---|' \
-            "| **From** | \`$SOURCE\` |" \
-            "| **Into** | \`$TARGET\` |" \
-            "| **Triggered by** | @${{ github.actor }} |" \
-            "| **Commit** | [\`$SHORT_SHA\`]($COMMIT_URL) |" \
-            "| **Commit message** | $COMMIT_MSG |" \
-            "| **Workflow run** | [View run]($RUN_URL) |" \
+            "- **From:** \`$SOURCE\`" \
+            "- **Into:** \`$TARGET\`" \
+            "- **Triggered by:** @${{ github.actor }}" \
+            "- **Original author:** $COMMIT_AUTHOR" \
+            "- **Commit:** [\`$SHORT_SHA\`]($COMMIT_URL)" \
+            "- **Commit message:** $COMMIT_MSG" \
+            "- **Workflow run:** [View run]($RUN_URL)" \
             '' \
-            "> Merge this PR to continue the downstream chain: \`$TARGET\` -> next environment." \
+            "> Merge this PR to continue the downstream chain: \`$TARGET\` → next environment." \
             '' \
             '---' \
             '*Created automatically by the downstream-pr workflow.*')
 
-          PR_URL=$(gh pr create \
-            --head  "$SOURCE" \
-            --base  "$TARGET" \
-            --title "chore: sync $SOURCE -> $TARGET ($SHORT_SHA)" \
-            --body  "$PR_BODY")
+          # Retry up to 3 times with exponential backoff
+          for attempt in 1 2 3; do
+            PR_URL=$(gh pr create \
+              --head  "$SOURCE" \
+              --base  "$TARGET" \
+              --title "chore: sync $SOURCE -> $TARGET ($SHORT_SHA)" \
+              --body  "$PR_BODY") && break
+
+            if [ $attempt -lt 3 ]; then
+              echo "Attempt $attempt failed, retrying in $((attempt * 5))s..."
+              sleep $((attempt * 5))
+            else
+              echo "Failed to create PR after 3 attempts" >&2
+              exit 1
+            fi
+          done
 
           echo "pr_url=$PR_URL"       >> "$GITHUB_OUTPUT"
           echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
-          # Multiline-safe output — handles %, =, newlines in commit messages
           {
             echo "commit_msg<<EOF"
             echo "$COMMIT_MSG"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
+          {
+            echo "commit_author<<EOF"
+            echo "$COMMIT_AUTHOR"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
-      # ── 5a. Slack — PR successfully created ──────────────────────────────
+      # ── 6a. Slack — Conflict detected (PR not created) ───────────────────
+      - name: Slack — conflict detected
+        if: steps.conflicts.outputs.has_conflicts == 'true' && steps.existing.outputs.pr_exists != 'true'
+        continue-on-error: true
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SOURCE:       ${{ steps.branches.outputs.source }}
+          TARGET:       ${{ steps.branches.outputs.target }}
+          ACTOR:        ${{ github.actor }}
+          SLACK_USER_ID: ${{ steps.slack_users.outputs.slack_map_json }}
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          COMMIT_MSG=$(git log -1 --pretty=format:"%s")
+          COMMIT_AUTHOR=$(git log -1 --pretty=format:"%an")
+
+          # Lookup Slack User ID from mapping (case-insensitive)
+          USER_ID=$(echo "$SLACK_USER_ID" | jq -r --arg actor "$ACTOR" 'to_entries | map(select((.key | ascii_downcase) == ($actor | ascii_downcase))) | .[0].value // ""')
+
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          jq -n \
+            --arg source     "$SOURCE" \
+            --arg target     "$TARGET" \
+            --arg sha        "$SHORT_SHA" \
+            --arg msg        "$COMMIT_MSG" \
+            --arg author     "$COMMIT_AUTHOR" \
+            --arg actor      "$ACTOR" \
+            --arg user_id    "$USER_ID" \
+            --arg run_url    "$RUN_URL" \
+            '{
+              blocks: [
+                {
+                  type: "header",
+                  text: { type: "plain_text", text: ("🚫  " + $source + " → " + $target + " - Merge Conflict"), emoji: false }
+                },
+                {
+                  type: "section",
+                  text: {
+                    type: "mrkdwn",
+                    text: ("⚠️ *Cannot create downstream PR*\n\nMerge conflict detected between `" + $source + "` and `" + $target + "`.\n\n👤 Triggered by: " + (if $user_id != "" then "<@" + $user_id + ">" else "@" + $actor end) + "\n📝 Commit: `" + $sha + "` by " + $author + "\n💬 " + $msg)
+                  }
+                },
+                {
+                  type: "actions",
+                  elements: [
+                    {
+                      type:  "button",
+                      text:  { type: "plain_text", text: "View Workflow Run", emoji: true },
+                      url:   $run_url,
+                      style: "danger"
+                    }
+                  ]
+                }
+              ]
+            }' \
+          | curl -s -f -X POST "$SLACK_WEBHOOK_URL" \
+              -H "Content-Type: application/json" \
+              -d @-
+
+      # ── 6b. Slack — PR successfully created ──────────────────────────────
       - name: Slack — PR created
-        if: steps.create_pr.outputs.pr_url != ''
+        if: steps.create_pr.outputs.pr_url != '' && steps.conflicts.outputs.has_conflicts != 'true'
+        continue-on-error: true
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           SOURCE:       ${{ steps.branches.outputs.source }}
@@ -142,29 +267,34 @@ jobs:
           PR_URL:       ${{ steps.create_pr.outputs.pr_url }}
           SHORT_SHA:    ${{ steps.create_pr.outputs.short_sha }}
           COMMIT_MSG:   ${{ steps.create_pr.outputs.commit_msg }}
+          COMMIT_AUTHOR: ${{ steps.create_pr.outputs.commit_author }}
           ACTOR:        ${{ github.actor }}
+          SLACK_USER_ID: ${{ steps.slack_users.outputs.slack_map_json }}
         run: |
+          # Lookup Slack User ID from mapping (case-insensitive)
+          USER_ID=$(echo "$SLACK_USER_ID" | jq -r --arg actor "$ACTOR" 'to_entries | map(select((.key | ascii_downcase) == ($actor | ascii_downcase))) | .[0].value // ""')
+
           jq -n \
             --arg source     "$SOURCE" \
             --arg target     "$TARGET" \
             --arg pr_url     "$PR_URL" \
             --arg sha        "$SHORT_SHA" \
             --arg msg        "$COMMIT_MSG" \
+            --arg author     "$COMMIT_AUTHOR" \
             --arg actor      "$ACTOR" \
+            --arg user_id    "$USER_ID" \
             '{
               blocks: [
                 {
                   type: "header",
-                  text: { type: "plain_text", text: "🔀 Downstream PR Created", emoji: true }
+                  text: { type: "plain_text", text: ("🔀  " + $source + " → " + $target), emoji: false }
                 },
                 {
                   type: "section",
-                  fields: [
-                    { type: "mrkdwn", text: ("*From:*\n`" + $source + "`") },
-                    { type: "mrkdwn", text: ("*Into:*\n`"  + $target + "`") },
-                    { type: "mrkdwn", text: ("*Triggered by:*\n@" + $actor) },
-                    { type: "mrkdwn", text: ("*Commit:*\n`" + $sha + "` — " + $msg) }
-                  ]
+                  text: {
+                    type: "mrkdwn",
+                    text: ("*" + (if $user_id != "" then "<@" + $user_id + ">" else "@" + $actor end) + "* · `" + $sha + "`\n" + $msg + "\n_Author: " + $author + "_")
+                  }
                 },
                 {
                   type: "actions",
@@ -183,35 +313,38 @@ jobs:
               -H "Content-Type: application/json" \
               -d @-
 
-      # ── 5b. Slack — PR already exists (reminder) ─────────────────────────
+      # ── 6c. Slack — PR already exists (reminder) ─────────────────────────
       - name: Slack — PR already exists
         if: steps.existing.outputs.pr_exists == 'true'
+        continue-on-error: true
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           SOURCE:     ${{ steps.branches.outputs.source }}
           TARGET:     ${{ steps.branches.outputs.target }}
-          PR_NUMBER:  ${{ steps.existing.outputs.pr_number }}
           PR_URL:     ${{ steps.existing.outputs.pr_url }}
           ACTOR:      ${{ github.actor }}
+          SLACK_USER_ID: ${{ steps.slack_users.outputs.slack_map_json }}
         run: |
+          # Lookup Slack User ID from mapping (case-insensitive)
+          USER_ID=$(echo "$SLACK_USER_ID" | jq -r --arg actor "$ACTOR" 'to_entries | map(select((.key | ascii_downcase) == ($actor | ascii_downcase))) | .[0].value // ""')
+          
           jq -n \
             --arg source    "$SOURCE" \
             --arg target    "$TARGET" \
-            --arg pr_number "$PR_NUMBER" \
             --arg pr_url    "$PR_URL" \
             --arg actor     "$ACTOR" \
+            --arg user_id   "$USER_ID" \
             '{
               blocks: [
+                {
+                  type: "header",
+                  text: { type: "plain_text", text: ("🔀  " + $source + " → " + $target), emoji: false }
+                },
                 {
                   type: "section",
                   text: {
                     type: "mrkdwn",
-                    text: (
-                      "ℹ️ *Downstream PR already open* — @" + $actor +
-                      " merged into `" + $source + "` but PR #" + $pr_number +
-                      " (`" + $source + "` → `" + $target + "`) is still open.\n" +
-                      "Please review and merge it to keep the chain moving."
-                    )
+                    text: ("ℹ️ *PR already open* — " + (if $user_id != "" then "<@" + $user_id + ">" else "@" + $actor end) + "\nPlease review and merge to keep the chain moving.")
                   }
                 },
                 {
@@ -229,3 +362,57 @@ jobs:
           | curl -s -f -X POST "$SLACK_WEBHOOK_URL" \
               -H "Content-Type: application/json" \
               -d @-
+
+      # ── 6d. Slack — Workflow failed ───────────────────────────────────────
+      - name: Slack — workflow failed
+        if: failure()
+        continue-on-error: true
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SOURCE: ${{ steps.branches.outputs.source }}
+          TARGET: ${{ steps.branches.outputs.target }}
+          ACTOR: ${{ github.actor }}
+          SLACK_USER_ID: ${{ steps.slack_users.outputs.slack_map_json }}
+        run: |
+          # Lookup Slack User ID from mapping (case-insensitive)
+          USER_ID=$(echo "$SLACK_USER_ID" | jq -r --arg actor "$ACTOR" 'to_entries | map(select((.key | ascii_downcase) == ($actor | ascii_downcase))) | .[0].value // ""')
+
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          SOURCE_LABEL="${SOURCE:-unknown}"
+          TARGET_LABEL="${TARGET:-unknown}"
+          jq -n \
+            --arg source "$SOURCE_LABEL" \
+            --arg target "$TARGET_LABEL" \
+            --arg actor "$ACTOR" \
+            --arg user_id "$USER_ID" \
+            --arg run_url "$RUN_URL" \
+            '{
+              blocks: [
+                {
+                  type: "header",
+                  text: { type: "plain_text", text: ("❌  " + $source + " → " + $target + " - Workflow Failed"), emoji: false }
+                },
+                {
+                  type: "section",
+                  text: {
+                    type: "mrkdwn",
+                    text: ("🔴 *Sync failed* — " + (if $user_id != "" then "<@" + $user_id + ">" else "@" + $actor end) + "\nPlease check the workflow logs.")
+                  }
+                },
+                {
+                  type: "actions",
+                  elements: [
+                    {
+                      type:  "button",
+                      text:  { type: "plain_text", text: "View Workflow Run", emoji: true },
+                      url:   $run_url,
+                      style: "danger"
+                    }
+                  ]
+                }
+              ]
+            }' \
+          | curl -s -f -X POST "$SLACK_WEBHOOK_URL" \
+              -H "Content-Type: application/json" \
+              -d @-
+
