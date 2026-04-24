@@ -128,31 +128,22 @@ jobs:
       - name: Check for merge conflicts (existing PR)
         id: conflicts_existing
         if: steps.existing.outputs.pr_exists == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          SOURCE="${{ steps.branches.outputs.source }}"
-          TARGET="${{ steps.branches.outputs.target }}"
+          PR_URL="${{ steps.existing.outputs.pr_url }}"
           
-          git fetch origin "$SOURCE" "$TARGET" --force
+          # Use GitHub API to check if PR has merge conflicts
+          MERGEABLE=$(gh pr view "$PR_URL" --json mergeable --jq '.mergeable')
           
-          SOURCE_COMMIT=$(git rev-parse origin/"$SOURCE")
-          TARGET_COMMIT=$(git rev-parse origin/"$TARGET")
+          echo "::notice::PR mergeable status: $MERGEABLE"
           
-          echo "::notice::Testing merge (existing PR): $SOURCE ($SOURCE_COMMIT) → $TARGET ($TARGET_COMMIT)"
-          
-          # Get merge-base (common ancestor)
-          MERGE_BASE=$(git merge-base "$TARGET_COMMIT" "$SOURCE_COMMIT")
-          echo "::notice::Merge base: $MERGE_BASE"
-          
-          # Use merge-tree to test for conflicts (doesn't modify working directory)
-          MERGE_RESULT=$(git merge-tree "$MERGE_BASE" "$TARGET_COMMIT" "$SOURCE_COMMIT" 2>&1)
-          
-          # Check for conflict markers in output
-          if echo "$MERGE_RESULT" | grep -q "^<<<<<<<\|^=======$\|^>>>>>>>"; then
+          if [ "$MERGEABLE" = "CONFLICTING" ]; then
             echo "has_conflicts=true" >> "$GITHUB_OUTPUT"
-            echo "::warning::Merge conflict detected: $SOURCE cannot merge into $TARGET"
+            echo "::warning::Merge conflict detected for $PR_URL"
           else
             echo "has_conflicts=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Merge successful: $SOURCE can merge into $TARGET without conflicts"
+            echo "::notice::No merge conflicts for $PR_URL"
           fi
 
       # ── 5. Create the downstream PR ──────────────────────────────────────
@@ -225,35 +216,23 @@ jobs:
       - name: Check for merge conflicts
         id: conflicts
         if: steps.create_pr.outputs.pr_url != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          SOURCE="${{ steps.branches.outputs.source }}"
-          TARGET="${{ steps.branches.outputs.target }}"
+          PR_URL="${{ steps.create_pr.outputs.pr_url }}"
           
-          git fetch origin "$SOURCE" "$TARGET" --force
+          # Use GitHub API to check if PR has merge conflicts
+          # GitHub automatically computes this when PR is created/updated
+          MERGEABLE=$(gh pr view "$PR_URL" --json mergeable --jq '.mergeable')
           
-          SOURCE_COMMIT=$(git rev-parse origin/"$SOURCE")
-          TARGET_COMMIT=$(git rev-parse origin/"$TARGET")
+          echo "::notice::PR mergeable status: $MERGEABLE"
           
-          echo "::notice::Testing merge: $SOURCE ($SOURCE_COMMIT) → $TARGET ($TARGET_COMMIT)"
-          
-          # Get merge-base (common ancestor)
-          MERGE_BASE=$(git merge-base "$TARGET_COMMIT" "$SOURCE_COMMIT")
-          echo "::notice::Merge base: $MERGE_BASE"
-          
-          # Use merge-tree to test for conflicts (doesn't modify working directory)
-          MERGE_RESULT=$(git merge-tree "$MERGE_BASE" "$TARGET_COMMIT" "$SOURCE_COMMIT" 2>&1)
-          MERGE_EXIT=$?
-          
-          echo "::notice::merge-tree exit code: $MERGE_EXIT"
-          
-          # Check for conflict markers in output
-          if echo "$MERGE_RESULT" | grep -q "^<<<<<<<\|^=======$\|^>>>>>>>"; then
+          if [ "$MERGEABLE" = "CONFLICTING" ]; then
             echo "has_conflicts=true" >> "$GITHUB_OUTPUT"
-            echo "::warning::Merge conflict detected: $SOURCE cannot merge into $TARGET"
-            echo "::notice::Conflict details: $MERGE_RESULT"
+            echo "::warning::Merge conflict detected for $PR_URL"
           else
             echo "has_conflicts=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Merge successful: $SOURCE can merge into $TARGET without conflicts"
+            echo "::notice::No merge conflicts for $PR_URL"
           fi
 
       # ── 5b. Add downstream label ─────────────────────────────────────────
