@@ -129,17 +129,30 @@ jobs:
         id: conflicts_existing
         if: steps.existing.outputs.pr_exists == 'true'
         run: |
-          git fetch origin ${{ steps.branches.outputs.target }}
-
-          # Try a dry-run merge
-          if ! git merge --no-commit --no-ff origin/${{ steps.branches.outputs.target }} 2>/dev/null; then
+          SOURCE="${{ steps.branches.outputs.source }}"
+          TARGET="${{ steps.branches.outputs.target }}"
+          
+          git fetch origin "$SOURCE" "$TARGET" --force
+          
+          SOURCE_COMMIT=$(git rev-parse origin/"$SOURCE")
+          TARGET_COMMIT=$(git rev-parse origin/"$TARGET")
+          
+          echo "::notice::Testing merge (existing PR): $SOURCE ($SOURCE_COMMIT) → $TARGET ($TARGET_COMMIT)"
+          
+          # Get merge-base (common ancestor)
+          MERGE_BASE=$(git merge-base "$TARGET_COMMIT" "$SOURCE_COMMIT")
+          echo "::notice::Merge base: $MERGE_BASE"
+          
+          # Use merge-tree to test for conflicts (doesn't modify working directory)
+          MERGE_RESULT=$(git merge-tree "$MERGE_BASE" "$TARGET_COMMIT" "$SOURCE_COMMIT" 2>&1)
+          
+          # Check for conflict markers in output
+          if echo "$MERGE_RESULT" | grep -q "^<<<<<<<\|^=======$\|^>>>>>>>"; then
             echo "has_conflicts=true" >> "$GITHUB_OUTPUT"
-            git merge --abort 2>/dev/null || true
+            echo "::warning::Merge conflict detected: $SOURCE cannot merge into $TARGET"
           else
             echo "has_conflicts=false" >> "$GITHUB_OUTPUT"
-            if [ -e .git/MERGE_HEAD ]; then
-              git merge --abort
-            fi
+            echo "::notice::Merge successful: $SOURCE can merge into $TARGET without conflicts"
           fi
 
       # ── 5. Create the downstream PR ──────────────────────────────────────
@@ -213,18 +226,34 @@ jobs:
         id: conflicts
         if: steps.create_pr.outputs.pr_url != ''
         run: |
-          git fetch origin ${{ steps.branches.outputs.target }}
-
-          # Try a dry-run merge
-          if ! git merge --no-commit --no-ff origin/${{ steps.branches.outputs.target }} 2>/dev/null; then
+          SOURCE="${{ steps.branches.outputs.source }}"
+          TARGET="${{ steps.branches.outputs.target }}"
+          
+          git fetch origin "$SOURCE" "$TARGET" --force
+          
+          SOURCE_COMMIT=$(git rev-parse origin/"$SOURCE")
+          TARGET_COMMIT=$(git rev-parse origin/"$TARGET")
+          
+          echo "::notice::Testing merge: $SOURCE ($SOURCE_COMMIT) → $TARGET ($TARGET_COMMIT)"
+          
+          # Get merge-base (common ancestor)
+          MERGE_BASE=$(git merge-base "$TARGET_COMMIT" "$SOURCE_COMMIT")
+          echo "::notice::Merge base: $MERGE_BASE"
+          
+          # Use merge-tree to test for conflicts (doesn't modify working directory)
+          MERGE_RESULT=$(git merge-tree "$MERGE_BASE" "$TARGET_COMMIT" "$SOURCE_COMMIT" 2>&1)
+          MERGE_EXIT=$?
+          
+          echo "::notice::merge-tree exit code: $MERGE_EXIT"
+          
+          # Check for conflict markers in output
+          if echo "$MERGE_RESULT" | grep -q "^<<<<<<<\|^=======$\|^>>>>>>>"; then
             echo "has_conflicts=true" >> "$GITHUB_OUTPUT"
-            git merge --abort 2>/dev/null || true
+            echo "::warning::Merge conflict detected: $SOURCE cannot merge into $TARGET"
+            echo "::notice::Conflict details: $MERGE_RESULT"
           else
             echo "has_conflicts=false" >> "$GITHUB_OUTPUT"
-            # Only abort if MERGE_HEAD exists (i.e., a merge was actually started)
-            if [ -e .git/MERGE_HEAD ]; then
-              git merge --abort
-            fi
+            echo "::notice::Merge successful: $SOURCE can merge into $TARGET without conflicts"
           fi
 
       # ── 5b. Add downstream label ─────────────────────────────────────────
@@ -255,17 +284,21 @@ jobs:
           SLACK_USER_ID: ${{ steps.slack_users.outputs.slack_map_json }}
           HAS_CONFLICTS: ${{ steps.conflicts.outputs.has_conflicts }}
         run: |
+          echo "::notice::HAS_CONFLICTS value: '$HAS_CONFLICTS'"
+          echo "::notice::SOURCE: $SOURCE, TARGET: $TARGET, PR_URL: $PR_URL"
+          
           # Lookup Slack User ID from mapping (case-insensitive)
           USER_ID=$(echo "$SLACK_USER_ID" | jq -r --arg actor "$ACTOR" 'to_entries | map(select((.key | ascii_downcase) == ($actor | ascii_downcase))) | .[0].value // ""')
 
           # Determine message based on conflict status
-          if [ "$HAS_CONFLICTS" = "true" ]; then
+          if [ "$HAS_CONFLICTS" == "true" ]; then
             HEADER="🚫  $SOURCE → $TARGET - Merge Conflict"
             BUTTON_STYLE="danger"
             BUTTON_TEXT="View Conflicting PR"
             # Build TEXT with ANSI-C quoting for proper newlines
             TRIGGERED_BY=$(if [ -n "$USER_ID" ]; then echo "<@$USER_ID>"; else echo "@$ACTOR"; fi)
             TEXT=$'⚠️ *Merge conflict detected*\n\nPR created but requires manual resolution.\n\n👤 Triggered by: '"$TRIGGERED_BY"$'\n📝 Commit: `'"$SHORT_SHA"'` by '"$COMMIT_AUTHOR"$'\n💬 '"$COMMIT_MSG"
+            echo "::warning::Merge conflict detected for PR $PR_URL"
           else
             HEADER="🔀  $SOURCE → $TARGET"
             BUTTON_STYLE="primary"
@@ -276,6 +309,7 @@ jobs:
             else
               TEXT=$'<@'"$USER_ID"$'> · `'"$SHORT_SHA"'`\n'"$COMMIT_MSG"$'\n_Author: '"$COMMIT_AUTHOR"
             fi
+            echo "::notice::PR created successfully: $PR_URL (no conflicts)"
           fi
 
           jq -n \
