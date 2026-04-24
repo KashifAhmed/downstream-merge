@@ -216,6 +216,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Create label if it doesn't exist, then add to PR
+          gh label create "automated-downstream" --color "0E8A16" --description "Automated downstream sync PR" 2>/dev/null || true
           gh pr edit "${{ steps.create_pr.outputs.pr_url }}" --add-label "automated-downstream"
 
       # ── 6. Slack notification — PR created (with or without conflicts) ───
@@ -252,9 +254,9 @@ jobs:
             BUTTON_TEXT="Review PR"
             # Build TEXT with ANSI-C quoting for proper newlines
             if [ -z "$USER_ID" ]; then
-              TEXT=$'@'"$ACTOR"$' · `'"$SHORT_SHA"'`\n'"$COMMIT_MSG"$'\n_Author: '"$COMMIT_AUTHOR"'"
+              TEXT=$'@'"$ACTOR"$' · `'"$SHORT_SHA"'`\n'"$COMMIT_MSG"$'\n_Author: '"$COMMIT_AUTHOR"
             else
-              TEXT=$'<@'"$USER_ID"$'> · `'"$SHORT_SHA"'`\n'"$COMMIT_MSG"$'\n_Author: '"$COMMIT_AUTHOR"'"
+              TEXT=$'<@'"$USER_ID"$'> · `'"$SHORT_SHA"'`\n'"$COMMIT_MSG"$'\n_Author: '"$COMMIT_AUTHOR"
             fi
           fi
 
