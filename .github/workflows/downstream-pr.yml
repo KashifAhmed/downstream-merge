@@ -129,10 +129,16 @@ jobs:
         id: conflicts_existing
         if: steps.existing.outputs.pr_exists == 'true'
         run: |
-          git fetch origin ${{ steps.branches.outputs.target }}
-
-          # Try a dry-run merge
-          if ! git merge --no-commit --no-ff origin/${{ steps.branches.outputs.target }} 2>/dev/null; then
+          SOURCE="${{ steps.branches.outputs.source }}"
+          TARGET="${{ steps.branches.outputs.target }}"
+          
+          git fetch origin "$SOURCE" "$TARGET"
+          
+          # Checkout target branch to test if source can merge into it
+          git checkout "$TARGET"
+          
+          # Try a dry-run merge of source INTO target (the PR direction)
+          if ! git merge --no-commit --no-ff origin/"$SOURCE" 2>/dev/null; then
             echo "has_conflicts=true" >> "$GITHUB_OUTPUT"
             git merge --abort 2>/dev/null || true
           else
@@ -141,6 +147,11 @@ jobs:
               git merge --abort
             fi
           fi
+          
+          # Restore original branch
+          git checkout -f "$SOURCE"
+          
+          echo "::notice::Conflict check (existing PR): $SOURCE → $TARGET has_conflicts=$(cat $GITHUB_OUTPUT | grep has_conflicts | cut -d= -f2)"
 
       # ── 5. Create the downstream PR ──────────────────────────────────────
       - name: Create downstream PR
@@ -213,21 +224,29 @@ jobs:
         id: conflicts
         if: steps.create_pr.outputs.pr_url != ''
         run: |
-          git fetch origin ${{ steps.branches.outputs.target }}
-
-          # Try a dry-run merge
-          if ! git merge --no-commit --no-ff origin/${{ steps.branches.outputs.target }} 2>/dev/null; then
+          SOURCE="${{ steps.branches.outputs.source }}"
+          TARGET="${{ steps.branches.outputs.target }}"
+          
+          git fetch origin "$SOURCE" "$TARGET"
+          
+          # Checkout target branch to test if source can merge into it
+          git checkout "$TARGET"
+          
+          # Try a dry-run merge of source INTO target (the PR direction)
+          if ! git merge --no-commit --no-ff origin/"$SOURCE" 2>/dev/null; then
             echo "has_conflicts=true" >> "$GITHUB_OUTPUT"
             git merge --abort 2>/dev/null || true
           else
             echo "has_conflicts=false" >> "$GITHUB_OUTPUT"
-            # Only abort if MERGE_HEAD exists (i.e., a merge was actually started)
             if [ -e .git/MERGE_HEAD ]; then
               git merge --abort
             fi
           fi
           
-          echo "::notice::Conflict check result: has_conflicts=$(cat $GITHUB_OUTPUT | grep has_conflicts | cut -d= -f2)"
+          # Restore original branch
+          git checkout -f "$SOURCE"
+          
+          echo "::notice::Conflict check: $SOURCE → $TARGET has_conflicts=$(cat $GITHUB_OUTPUT | grep has_conflicts | cut -d= -f2)"
 
       # ── 5b. Add downstream label ─────────────────────────────────────────
       - name: Add downstream label
