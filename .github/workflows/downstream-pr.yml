@@ -134,8 +134,9 @@ jobs:
           
           git fetch origin "$SOURCE" "$TARGET"
           
-          # Checkout target branch to test if source can merge into it
-          git checkout "$TARGET"
+          # Force checkout target branch to ensure clean state
+          git checkout -f "$TARGET"
+          git reset --hard origin/"$TARGET"
           
           # Try a dry-run merge of source INTO target (the PR direction)
           if ! git merge --no-commit --no-ff origin/"$SOURCE" 2>/dev/null; then
@@ -147,9 +148,6 @@ jobs:
               git merge --abort
             fi
           fi
-          
-          # Restore original branch
-          git checkout -f "$SOURCE"
           
           echo "::notice::Conflict check (existing PR): $SOURCE → $TARGET has_conflicts=$(cat $GITHUB_OUTPUT | grep has_conflicts | cut -d= -f2)"
 
@@ -229,8 +227,9 @@ jobs:
           
           git fetch origin "$SOURCE" "$TARGET"
           
-          # Checkout target branch to test if source can merge into it
-          git checkout "$TARGET"
+          # Force checkout target branch to ensure clean state
+          git checkout -f "$TARGET"
+          git reset --hard origin/"$TARGET"
           
           # Try a dry-run merge of source INTO target (the PR direction)
           if ! git merge --no-commit --no-ff origin/"$SOURCE" 2>/dev/null; then
@@ -242,9 +241,6 @@ jobs:
               git merge --abort
             fi
           fi
-          
-          # Restore original branch
-          git checkout -f "$SOURCE"
           
           echo "::notice::Conflict check: $SOURCE → $TARGET has_conflicts=$(cat $GITHUB_OUTPUT | grep has_conflicts | cut -d= -f2)"
 
