@@ -31,6 +31,8 @@ jobs:
 
       # ── 0. Validate environment & secrets ─────────────────────────────────
       - name: Validate environment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
           if [[ -z "$SLACK_WEBHOOK_URL" ]]; then
