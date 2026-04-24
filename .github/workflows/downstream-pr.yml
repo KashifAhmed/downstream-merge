@@ -241,20 +241,21 @@ jobs:
           # Determine message based on conflict status
           if [ "$HAS_CONFLICTS" = "true" ]; then
             HEADER="🚫  $SOURCE → $TARGET - Merge Conflict"
-            TEXT="⚠️ *Merge conflict detected*\n\nPR created but requires manual resolution.\n\n👤 Triggered by: $(if [ -n "$USER_ID" ]; then echo "<@$USER_ID>"; else echo "@$ACTOR"; fi)\n📝 Commit: \`$SHORT_SHA\` by $COMMIT_AUTHOR\n💬 $COMMIT_MSG"
             BUTTON_STYLE="danger"
             BUTTON_TEXT="View Conflicting PR"
+            # Build TEXT with ANSI-C quoting for proper newlines
+            TRIGGERED_BY=$(if [ -n "$USER_ID" ]; then echo "<@$USER_ID>"; else echo "@$ACTOR"; fi)
+            TEXT=$'⚠️ *Merge conflict detected*\n\nPR created but requires manual resolution.\n\n👤 Triggered by: '"$TRIGGERED_BY"$'\n📝 Commit: `'"$SHORT_SHA"'` by '"$COMMIT_AUTHOR"$'\n💬 '"$COMMIT_MSG"
           else
             HEADER="🔀  $SOURCE → $TARGET"
-            TEXT="*$USER_ID* · \`$SHORT_SHA\`\n$COMMIT_MSG\n_Author: $COMMIT_AUTHOR_"
-            # Fallback if USER_ID is empty
-            if [ -z "$USER_ID" ]; then
-              TEXT="@$ACTOR · \`$SHORT_SHA\`\n$COMMIT_MSG\n_Author: $COMMIT_AUTHOR_"
-            else
-              TEXT="<@$USER_ID> · \`$SHORT_SHA\`\n$COMMIT_MSG\n_Author: $COMMIT_AUTHOR_"
-            fi
             BUTTON_STYLE="primary"
             BUTTON_TEXT="Review PR"
+            # Build TEXT with ANSI-C quoting for proper newlines
+            if [ -z "$USER_ID" ]; then
+              TEXT=$'@'"$ACTOR"$' · `'"$SHORT_SHA"'`\n'"$COMMIT_MSG"$'\n_Author: '"$COMMIT_AUTHOR"'"
+            else
+              TEXT=$'<@'"$USER_ID"$'> · `'"$SHORT_SHA"'`\n'"$COMMIT_MSG"$'\n_Author: '"$COMMIT_AUTHOR"'"
+            fi
           fi
 
           jq -n \
@@ -307,7 +308,7 @@ jobs:
         run: |
           # Lookup Slack User ID from mapping (case-insensitive)
           USER_ID=$(echo "$SLACK_USER_ID" | jq -r --arg actor "$ACTOR" 'to_entries | map(select((.key | ascii_downcase) == ($actor | ascii_downcase))) | .[0].value // ""')
-          
+
           jq -n \
             --arg source    "$SOURCE" \
             --arg target    "$TARGET" \
