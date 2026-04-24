@@ -18,6 +18,7 @@ jobs:
   downstream-pr:
     name: "${{ github.ref_name }} → downstream"
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       pull-requests: write
@@ -27,6 +28,17 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      # ── 0. Validate environment & secrets ─────────────────────────────────
+      - name: Validate environment
+        run: |
+          set -e
+          if [[ -z "$SLACK_WEBHOOK_URL" ]]; then
+            echo "::warning::SLACK_WEBHOOK_URL not set — Slack notifications will be skipped"
+          fi
+          if [[ ! -f "$GITHUB_WORKSPACE/.github/slack-users.json" ]]; then
+            echo "::warning::slack-users.json not found — Slack user mentions will be disabled"
+          fi
 
       # ── 1. GitHub → Slack user mapping ───────────────────────────────────
       - name: Setup Slack user mapping
@@ -198,6 +210,15 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
+      # ── 5b. Add downstream label ─────────────────────────────────────────
+      - name: Add downstream label
+        if: steps.create_pr.outputs.pr_url != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr edit "${{ steps.create_pr.outputs.pr_url }}" --add-label "automated-downstream"
+
       # ── 6a. Slack — Conflict detected (PR not created) ───────────────────
       - name: Slack — conflict detected
         if: steps.conflicts.outputs.has_conflicts == 'true' && steps.existing.outputs.pr_exists != 'true'
@@ -216,7 +237,35 @@ jobs:
           # Lookup Slack User ID from mapping (case-insensitive)
           USER_ID=$(echo "$SLACK_USER_ID" | jq -r --arg actor "$ACTOR" 'to_entries | map(select((.key | ascii_downcase) == ($actor | ascii_downcase))) | .[0].value // ""')
 
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          # Get the last PR that was merged into source branch to identify the conflicting PR
+          PR_URL=$(gh pr list --base "$SOURCE" --state closed --json url,mergedAt --jq 'sort_by(.mergedAt) | reverse | .[0].url // ""')
+          
+          if [ -z "$PR_URL" ]; then
+            # Fallback: get the latest merged PR by commit SHA reference
+            PR_URL=$(gh pr list --base "$SOURCE" --state all --json url,title --jq '.[] | select(.title | contains("'"$SHORT_SHA"'")) | .url' | head -1)
+          fi
+
+          if [ -n "$PR_URL" ]; then
+            ACTION_BUTTON=$(jq -n \
+              --arg pr_url "$PR_URL" \
+              '{
+                type: "button",
+                text: { type: "plain_text", text: "View Conflicting PR", emoji: true },
+                url: $pr_url,
+                style: "danger"
+              }')
+          else
+            RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            ACTION_BUTTON=$(jq -n \
+              --arg run_url "$RUN_URL" \
+              '{
+                type: "button",
+                text: { type: "plain_text", text: "View Workflow Run", emoji: true },
+                url: $run_url,
+                style: "danger"
+              }')
+          fi
+
           jq -n \
             --arg source     "$SOURCE" \
             --arg target     "$TARGET" \
@@ -225,7 +274,7 @@ jobs:
             --arg author     "$COMMIT_AUTHOR" \
             --arg actor      "$ACTOR" \
             --arg user_id    "$USER_ID" \
-            --arg run_url    "$RUN_URL" \
+            --argjson action "$ACTION_BUTTON" \
             '{
               blocks: [
                 {
@@ -241,14 +290,7 @@ jobs:
                 },
                 {
                   type: "actions",
-                  elements: [
-                    {
-                      type:  "button",
-                      text:  { type: "plain_text", text: "View Workflow Run", emoji: true },
-                      url:   $run_url,
-                      style: "danger"
-                    }
-                  ]
+                  elements: [$action]
                 }
               ]
             }' \
