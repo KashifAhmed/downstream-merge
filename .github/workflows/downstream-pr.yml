@@ -132,24 +132,28 @@ jobs:
           SOURCE="${{ steps.branches.outputs.source }}"
           TARGET="${{ steps.branches.outputs.target }}"
           
-          git fetch origin "$SOURCE" "$TARGET"
+          git fetch origin "$SOURCE" "$TARGET" --force
           
-          # Force checkout target branch to ensure clean state
-          git checkout -f "$TARGET"
-          git reset --hard origin/"$TARGET"
+          SOURCE_COMMIT=$(git rev-parse origin/"$SOURCE")
+          TARGET_COMMIT=$(git rev-parse origin/"$TARGET")
           
-          # Try a dry-run merge of source INTO target (the PR direction)
-          if ! git merge --no-commit --no-ff origin/"$SOURCE" 2>/dev/null; then
+          echo "::notice::Testing merge (existing PR): $SOURCE ($SOURCE_COMMIT) → $TARGET ($TARGET_COMMIT)"
+          
+          # Get merge-base (common ancestor)
+          MERGE_BASE=$(git merge-base "$TARGET_COMMIT" "$SOURCE_COMMIT")
+          echo "::notice::Merge base: $MERGE_BASE"
+          
+          # Use merge-tree to test for conflicts (doesn't modify working directory)
+          MERGE_RESULT=$(git merge-tree "$MERGE_BASE" "$TARGET_COMMIT" "$SOURCE_COMMIT" 2>&1)
+          
+          # Check for conflict markers in output
+          if echo "$MERGE_RESULT" | grep -q "^<<<<<<<\|^=======$\|^>>>>>>>"; then
             echo "has_conflicts=true" >> "$GITHUB_OUTPUT"
-            git merge --abort 2>/dev/null || true
+            echo "::warning::Merge conflict detected: $SOURCE cannot merge into $TARGET"
           else
             echo "has_conflicts=false" >> "$GITHUB_OUTPUT"
-            if [ -e .git/MERGE_HEAD ]; then
-              git merge --abort
-            fi
+            echo "::notice::Merge successful: $SOURCE can merge into $TARGET without conflicts"
           fi
-          
-          echo "::notice::Conflict check (existing PR): $SOURCE → $TARGET has_conflicts=$(cat $GITHUB_OUTPUT | grep has_conflicts | cut -d= -f2)"
 
       # ── 5. Create the downstream PR ──────────────────────────────────────
       - name: Create downstream PR
@@ -225,24 +229,32 @@ jobs:
           SOURCE="${{ steps.branches.outputs.source }}"
           TARGET="${{ steps.branches.outputs.target }}"
           
-          git fetch origin "$SOURCE" "$TARGET"
+          git fetch origin "$SOURCE" "$TARGET" --force
           
-          # Force checkout target branch to ensure clean state
-          git checkout -f "$TARGET"
-          git reset --hard origin/"$TARGET"
+          SOURCE_COMMIT=$(git rev-parse origin/"$SOURCE")
+          TARGET_COMMIT=$(git rev-parse origin/"$TARGET")
           
-          # Try a dry-run merge of source INTO target (the PR direction)
-          if ! git merge --no-commit --no-ff origin/"$SOURCE" 2>/dev/null; then
+          echo "::notice::Testing merge: $SOURCE ($SOURCE_COMMIT) → $TARGET ($TARGET_COMMIT)"
+          
+          # Get merge-base (common ancestor)
+          MERGE_BASE=$(git merge-base "$TARGET_COMMIT" "$SOURCE_COMMIT")
+          echo "::notice::Merge base: $MERGE_BASE"
+          
+          # Use merge-tree to test for conflicts (doesn't modify working directory)
+          MERGE_RESULT=$(git merge-tree "$MERGE_BASE" "$TARGET_COMMIT" "$SOURCE_COMMIT" 2>&1)
+          MERGE_EXIT=$?
+          
+          echo "::notice::merge-tree exit code: $MERGE_EXIT"
+          
+          # Check for conflict markers in output
+          if echo "$MERGE_RESULT" | grep -q "^<<<<<<<\|^=======$\|^>>>>>>>"; then
             echo "has_conflicts=true" >> "$GITHUB_OUTPUT"
-            git merge --abort 2>/dev/null || true
+            echo "::warning::Merge conflict detected: $SOURCE cannot merge into $TARGET"
+            echo "::notice::Conflict details: $MERGE_RESULT"
           else
             echo "has_conflicts=false" >> "$GITHUB_OUTPUT"
-            if [ -e .git/MERGE_HEAD ]; then
-              git merge --abort
-            fi
+            echo "::notice::Merge successful: $SOURCE can merge into $TARGET without conflicts"
           fi
-          
-          echo "::notice::Conflict check: $SOURCE → $TARGET has_conflicts=$(cat $GITHUB_OUTPUT | grep has_conflicts | cut -d= -f2)"
 
       # ── 5b. Add downstream label ─────────────────────────────────────────
       - name: Add downstream label
