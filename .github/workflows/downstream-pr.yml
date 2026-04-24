@@ -224,6 +224,7 @@ jobs:
         if: steps.conflicts.outputs.has_conflicts == 'true' && steps.existing.outputs.pr_exists != 'true'
         continue-on-error: true
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           SOURCE:       ${{ steps.branches.outputs.source }}
           TARGET:       ${{ steps.branches.outputs.target }}
