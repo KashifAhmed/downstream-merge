@@ -133,10 +133,20 @@ jobs:
         run: |
           PR_URL="${{ steps.existing.outputs.pr_url }}"
 
-          # Use GitHub API to check if PR has merge conflicts
-          MERGEABLE=$(gh pr view "$PR_URL" --json mergeable --jq '.mergeable')
-
-          echo "::notice::PR mergeable status: $MERGEABLE"
+          # GitHub computes mergeable status asynchronously - retry up to 3 times
+          for attempt in 1 2 3; do
+            MERGEABLE=$(gh pr view "$PR_URL" --json mergeable --jq '.mergeable')
+            echo "::notice::PR mergeable status (attempt $attempt): $MERGEABLE"
+            
+            if [ "$MERGEABLE" = "UNKNOWN" ]; then
+              if [ $attempt -lt 3 ]; then
+                echo "Mergeable status not yet computed, waiting 5s..."
+                sleep 5
+              fi
+            else
+              break
+            fi
+          done
 
           if [ "$MERGEABLE" = "CONFLICTING" ]; then
             echo "has_conflicts=true" >> "$GITHUB_OUTPUT"
@@ -221,11 +231,20 @@ jobs:
         run: |
           PR_URL="${{ steps.create_pr.outputs.pr_url }}"
 
-          # Use GitHub API to check if PR has merge conflicts
-          # GitHub automatically computes this when PR is created/updated
-          MERGEABLE=$(gh pr view "$PR_URL" --json mergeable --jq '.mergeable')
-
-          echo "::notice::PR mergeable status: $MERGEABLE"
+          # GitHub computes mergeable status asynchronously - retry up to 3 times
+          for attempt in 1 2 3; do
+            MERGEABLE=$(gh pr view "$PR_URL" --json mergeable --jq '.mergeable')
+            echo "::notice::PR mergeable status (attempt $attempt): $MERGEABLE"
+            
+            if [ "$MERGEABLE" = "UNKNOWN" ]; then
+              if [ $attempt -lt 3 ]; then
+                echo "Mergeable status not yet computed, waiting 5s..."
+                sleep 5
+              fi
+            else
+              break
+            fi
+          done
 
           if [ "$MERGEABLE" = "CONFLICTING" ]; then
             echo "has_conflicts=true" >> "$GITHUB_OUTPUT"
@@ -273,7 +292,7 @@ jobs:
           if [ "$HAS_CONFLICTS" == "true" ]; then
             HEADER="🚫  $SOURCE → $TARGET - Merge Conflict"
             BUTTON_STYLE="danger"
-            BUTTON_TEXT="View Conflicting PR"
+            BUTTON_TEXT="Resolve Conflicts"
             # Build TEXT with ANSI-C quoting for proper newlines
             TRIGGERED_BY=$(if [ -n "$USER_ID" ]; then echo "<@$USER_ID>"; else echo "@$ACTOR"; fi)
             TEXT=$'⚠️ *Merge conflict detected*\n\nPR created but requires manual resolution.\n\n👤 Triggered by: '"$TRIGGERED_BY"$'\n📝 Commit: `'"$SHORT_SHA"'` by '"$COMMIT_AUTHOR"$'\n💬 '"$COMMIT_MSG"
@@ -347,7 +366,7 @@ jobs:
           if [ "$HAS_CONFLICTS" = "true" ]; then
             HEADER="🚫  $SOURCE → $TARGET - Merge Conflict"
             TEXT=$'⚠️ *PR already exists with conflicts*\n\nPlease resolve conflicts before merging.\n\n👤 Triggered by: '"$(if [ -n "$USER_ID" ]; then echo "<@$USER_ID>"; else echo "@$ACTOR"; fi)"
-            BUTTON_TEXT="View Conflicting PR"
+            BUTTON_TEXT="Resolve Conflicts"
             BUTTON_STYLE="danger"
           else
             HEADER="🔀  $SOURCE → $TARGET"
