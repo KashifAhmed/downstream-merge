@@ -284,9 +284,9 @@ jobs:
             BUTTON_TEXT="Review PR"
             # Build TEXT with ANSI-C quoting for proper newlines
             if [ -z "$USER_ID" ]; then
-              TEXT=$'@'"$ACTOR"$' · `'"$SHORT_SHA"'$'\n'"$COMMIT_MSG"$'\n_Author: '"$COMMIT_AUTHOR"
+              TEXT=$'@'"$ACTOR"$' · `'"$SHORT_SHA"'`'$'\n'"$COMMIT_MSG"$'\n_Author: '"$COMMIT_AUTHOR"
             else
-              TEXT=$'<@'"$USER_ID"$'> · `'"$SHORT_SHA"'$'\n'"$COMMIT_MSG"$'\n_Author: '"$COMMIT_AUTHOR"
+              TEXT=$'<@'"$USER_ID"$'> · `'"$SHORT_SHA"'`'$'\n'"$COMMIT_MSG"$'\n_Author: '"$COMMIT_AUTHOR"
             fi
             echo "::notice::PR created successfully: $PR_URL (no conflicts)"
           fi
